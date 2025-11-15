@@ -3,7 +3,10 @@ from pathlib import Path
 
 # Path to your saved model
 MODEL_PATH = Path(r"F:/VS Code Storage/ChessHacks2025/checkpoints/best_model.pt")
+
+    
 SAVE_WEIGHTS_PATH = Path(r"F:/VS Code Storage/ChessHacks2025/weights/trained_weights.txt")
+
 
 # Load checkpoint
 checkpoint = torch.load(MODEL_PATH, map_location="cpu")
