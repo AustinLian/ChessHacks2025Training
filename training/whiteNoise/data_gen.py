@@ -3,39 +3,36 @@
 SELF-PLAY DATA GENERATOR (STOCKFISH-LABELED)
 ============================================
 
-Produces MILLIONS of positions with:
-  - planes: (18, 8, 8)
-  - y_policy_best
-  - cp_before
-  - cp_after_best
-  - delta_cp
-  - game_result (POV of side to move)
+Produces positions with:
+  - X: planes (18, 8, 8)
+  - y_policy_best: Stockfish best-move index
+  - cp_before: eval of current position (stm POV)
+  - cp_after_best: eval after best move (same POV)
+  - delta_cp: cp_after_best - cp_before
+  - game_result: final game result (POV of side to move at each sample)
 
-Every position is produced by:
+Every stored position is produced by:
 
   1) Get SF best move + eval
-  2) Store labels
-  3) Choose *noisy move* for self-play:
+  2) Optionally filter by game phase (favor midgame/endgame)
+  3) Store labels
+  4) Choose *noisy move* for self-play:
        - temperature
-       - Dirichlet root noise
-
-This prevents positional collapse and generates diverse training data.
+       - Dirichlet noise
 
 Outputs:
   shard_00001.npz
   shard_00002.npz
   ...
 
-Each shard contains ~50,000 positions
+Each shard contains ~SHARD_SIZE positions.
 """
 
 import chess
 import chess.engine
-import chess.pgn
 import numpy as np
 from pathlib import Path
 import random
-import time
 
 # =====================================================================
 # CONFIG
@@ -44,16 +41,27 @@ import time
 class Config:
     ENGINE_PATH = r"C:\Users\ethan\Downloads\ChessHacks\ChessHacks2025\training\whiteNoise\stockfish-windows-x86-64-avx2.exe"
 
-    DEPTH = 12                   # use fixed depth for reproducibility
-    TIME_LIMIT = None           # set to 0.03 if using time instead
+    DEPTH = 12                  # use fixed depth for reproducibility
+    TIME_LIMIT = None           # or e.g. 0.03 for time-based
+
     MAX_MOVES_PER_GAME = 200
 
-    SHARD_SIZE = 50000          # NPZ entries per shard
-    OUTPUT_DIR = "training\whiteNoise\processed"
+    SHARD_SIZE = 50_000         # NPZ entries per shard
+    OUTPUT_DIR = r"training\whiteNoise\processed"
 
     DIRICHLET_ALPHA = 0.3
     TEMPERATURE = 1.2           # >1 = more randomness
 
+    # -------- Phase-based filtering (0=endgame, 1=opening) --------
+    OPENING_PHASE_THRESHOLD = 0.7  # above this is "opening-ish"
+    ENDGAME_PHASE_THRESHOLD = 0.3  # below this is "endgame-ish"
+
+    # Keep only this fraction of opening positions (others are skipped,
+    # but the game continues with self-play).
+    OPENING_KEEP_PROB = 0.3        # keep 30% of opening positions
+
+    # Optionally drop totally lopsided positions (in cp) outside pure endgames
+    MAX_ABS_CP_FOR_STORAGE = 800   # skip |cp_before| > this, unless in endgame
 
 cfg = Config()
 
@@ -98,23 +106,68 @@ def fen_to_planes(board: chess.Board) -> np.ndarray:
         p_idx = PIECE_PLANES[(piece.piece_type, piece.color)]
         r = 7 - chess.square_rank(sq)
         f = chess.square_file(sq)
-        P[p_idx, r, f] = 1
+        P[p_idx, r, f] = 1.0
 
     # side to move
-    P[12, :, :] = 1 if board.turn == chess.WHITE else 0
+    P[12, :, :] = 1.0 if board.turn == chess.WHITE else 0.0
 
     # castling
-    if board.has_kingside_castling_rights(chess.WHITE):  P[13,:,:] = 1
-    if board.has_queenside_castling_rights(chess.WHITE): P[14,:,:] = 1
-    if board.has_kingside_castling_rights(chess.BLACK):  P[15,:,:] = 1
-    if board.has_queenside_castling_rights(chess.BLACK): P[16,:,:] = 1
+    if board.has_kingside_castling_rights(chess.WHITE):
+        P[13, :, :] = 1.0
+    if board.has_queenside_castling_rights(chess.WHITE):
+        P[14, :, :] = 1.0
+    if board.has_kingside_castling_rights(chess.BLACK):
+        P[15, :, :] = 1.0
+    if board.has_queenside_castling_rights(chess.BLACK):
+        P[16, :, :] = 1.0
 
     # en passant
     if board.ep_square is not None:
         file = chess.square_file(board.ep_square)
-        P[17, :, file] = 1
+        P[17, :, file] = 1.0
 
     return P
+
+
+# =====================================================================
+# GAME PHASE ESTIMATION (material-based)
+# =====================================================================
+
+# Rough phase values per piece (similar spirit to Stockfish)
+PIECE_PHASE = {
+    chess.PAWN:   0,
+    chess.KNIGHT: 1,
+    chess.BISHOP: 1,
+    chess.ROOK:   2,
+    chess.QUEEN:  4,
+    chess.KING:   0,
+}
+
+# Max phase for full material: 2 knights, 2 bishops, 2 rooks, 1 queen per side
+MAX_PHASE = (
+    2 * PIECE_PHASE[chess.KNIGHT] * 2 +  # 2 knights per side
+    2 * PIECE_PHASE[chess.BISHOP] * 2 +  # 2 bishops per side
+    2 * PIECE_PHASE[chess.ROOK]   * 2 +  # 2 rooks per side
+    2 * PIECE_PHASE[chess.QUEEN]  * 1    # 1 queen per side
+)
+
+
+def game_phase_from_board(board: chess.Board) -> float:
+    """
+    Return phase in [0,1]:
+      1.0 ~ full material / opening-ish
+      0.0 ~ bare material / pure endgame-ish
+    """
+    phase = 0
+    for piece_type, p_val in PIECE_PHASE.items():
+        if p_val == 0:
+            continue
+        for color in [chess.WHITE, chess.BLACK]:
+            count = len(board.pieces(piece_type, color))
+            phase += count * p_val
+
+    phase = min(phase, MAX_PHASE) if MAX_PHASE > 0 else 0
+    return phase / MAX_PHASE if MAX_PHASE > 0 else 0.0
 
 
 # =====================================================================
@@ -132,7 +185,11 @@ class StockfishEvaluator:
             return chess.engine.Limit(depth=self.depth)
         return chess.engine.Limit(time=self.time_limit)
 
-    def eval_and_best(self, board):
+    def eval_and_best(self, board: chess.Board):
+        """
+        Return (cp, best_move) from POV of side to move.
+        cp is centipawns, mate mapped to +/-10000.
+        """
         info = self.engine.analyse(board, self.limit())
         score = info["score"].pov(board.turn)
         if score.is_mate():
@@ -153,55 +210,90 @@ class StockfishEvaluator:
 # SELF-PLAY EPISODE
 # =====================================================================
 
-def choose_noisy_move(board, best_move):
+def choose_noisy_move(board: chess.Board, best_move: chess.Move) -> chess.Move:
     """
     Returns a random legal move biased toward Stockfish best.
+
+    Games are more varied because:
+      - we add Dirichlet noise
+      - we apply temperature
+      - we don't always play the best move
     """
 
     legal = list(board.legal_moves)
+    if not legal:
+        return best_move
 
-    # Pure deterministic = best move
+    # Pure deterministic: force best move if no noise / temp
     if cfg.TEMPERATURE <= 1e-6 and cfg.DIRICHLET_ALPHA <= 1e-6:
         return best_move
 
-    # Make a simple softmax: best move gets big weight
+    # Base logits: slight bias toward best move, 0 for others
     logits = np.zeros(len(legal), dtype=np.float32)
     for i, mv in enumerate(legal):
         logits[i] = 1.0 if mv == best_move else 0.0
 
-    # Add Dirichlet noise
+    # Add Dirichlet noise for exploration
     noise = np.random.dirichlet([cfg.DIRICHLET_ALPHA] * len(legal))
     logits = logits + noise
 
     # Apply temperature
     logits = logits ** (1.0 / cfg.TEMPERATURE)
 
-    # Normalize
-    logits /= logits.sum()
+    # Normalize to get a distribution
+    logits_sum = logits.sum()
+    if logits_sum <= 0:
+        # Fallback: uniform random move
+        return random.choice(legal)
+    probs = logits / logits_sum
 
-    return random.choices(legal, weights=logits, k=1)[0]
+    return random.choices(legal, weights=probs, k=1)[0]
 
 
-def play_selfplay_game(sf):
+def play_selfplay_game(sf: StockfishEvaluator):
     """
-    Returns a list of labeled positions.
+    Returns a list of labeled positions (planes, policy_idx, cp_before, cp_after, delta)
+    and the final game result g (1/-1/0 from White's POV).
+
+    IMPORTANT:
+      - Labels always use Stockfish best move as the policy target.
+      - Self-play move can be noisy / bad to diversify positions.
     """
 
     board = chess.Board()
     labels = []
 
     while not board.is_game_over() and len(labels) < cfg.MAX_MOVES_PER_GAME:
+        # 1) Phase: 1.0 = opening, 0.0 = endgame
+        phase = game_phase_from_board(board)
 
-        planes = fen_to_planes(board)
+        # 2) Eval & best move from current position
         cp_before, best_move = sf.eval_and_best(board)
         if best_move is None:
             break
 
-        # Eval after SF best move
+        # 3) Phase / cp-based filtering for *storage* (self-play still continues):
+
+        # (a) Skip many opening positions (but still play through them)
+        if phase >= cfg.OPENING_PHASE_THRESHOLD:
+            if random.random() > cfg.OPENING_KEEP_PROB:
+                move = choose_noisy_move(board, best_move)
+                board.push(move)
+                continue  # do not store this position, go to next ply
+
+        # (b) Skip super lopsided non-endgame positions (optional)
+        if abs(cp_before) > cfg.MAX_ABS_CP_FOR_STORAGE and phase > cfg.ENDGAME_PHASE_THRESHOLD:
+            move = choose_noisy_move(board, best_move)
+            board.push(move)
+            continue  # do not store, but keep playing
+
+        # 4) Compute planes and cp_after_best (for positions we keep)
+        planes = fen_to_planes(board)
+
         b2 = board.copy()
         b2.push(best_move)
         cp_after_opp_pov, _ = sf.eval_and_best(b2)   # eval from opponent POV
-        cp_after = -cp_after_opp_pov                 # convert back to original POV
+        cp_after = -cp_after_opp_pov                 # convert back to original STM POV
 
         delta = cp_after - cp_before
         policy_idx = move_to_index(best_move)
@@ -209,18 +301,18 @@ def play_selfplay_game(sf):
         # Store sample
         labels.append((planes, policy_idx, cp_before, cp_after, delta))
 
-        # SELF-PLAY MOVE (NOISY)
+        # 5) SELF-PLAY MOVE (NOISY) – can be bad, which creates diverse mid/endgames
         move = choose_noisy_move(board, best_move)
         board.push(move)
 
-    # Convert game result (POV)
+    # Convert final game result (from White's POV)
     res = board.result()
     if res == "1-0":
-        g = 1
+        g = 1.0
     elif res == "0-1":
-        g = -1
+        g = -1.0
     else:
-        g = 0
+        g = 0.0
 
     return labels, g
 
@@ -240,37 +332,44 @@ def main():
 
     print("Starting self-play...")
 
-    while True:
-        labels, g = play_selfplay_game(sf)
+    try:
+        while True:
+            labels, g = play_selfplay_game(sf)
 
-        for (planes, pol, cp_before, cp_after, delta) in labels:
-            buffer.append((planes, pol, cp_before, cp_after, delta, g))
+            # Attach game result g to each position
+            for (planes, pol, cp_before, cp_after, delta) in labels:
+                buffer.append((planes, pol, cp_before, cp_after, delta, g))
 
-        if len(buffer) >= cfg.SHARD_SIZE:
-            X = np.stack([b[0] for b in buffer])
-            policy = np.array([b[1] for b in buffer], np.int64)
-            cp_before = np.array([b[2] for b in buffer], np.float32)
-            cp_after = np.array([b[3] for b in buffer], np.float32)
-            delta_cp = np.array([b[4] for b in buffer], np.float32)
-            game_result = np.array([b[5] for b in buffer], np.float32)
+            if len(buffer) >= cfg.SHARD_SIZE:
+                X = np.stack([b[0] for b in buffer])
+                policy = np.array([b[1] for b in buffer], np.int64)
+                cp_before = np.array([b[2] for b in buffer], np.float32)
+                cp_after = np.array([b[3] for b in buffer], np.float32)
+                delta_cp = np.array([b[4] for b in buffer], np.float32)
+                game_result = np.array([b[5] for b in buffer], np.float32)
 
-            save_path = out / f"shard_{shard_id:05d}.npz"
-            np.savez_compressed(save_path,
-                                X=X,
-                                y_policy_best=policy,
-                                cp_before=cp_before,
-                                cp_after_best=cp_after,
-                                delta_cp=delta_cp,
-                                game_result=game_result)
+                save_path = out / f"shard_{shard_id:05d}.npz"
+                np.savez_compressed(
+                    save_path,
+                    X=X,
+                    y_policy_best=policy,
+                    cp_before=cp_before,
+                    cp_after_best=cp_after,
+                    delta_cp=delta_cp,
+                    game_result=game_result,
+                )
 
-            print(f"[+] Saved shard {shard_id} with {len(buffer)} samples → {save_path}")
+                print(f"[+] Saved shard {shard_id} with {len(buffer)} samples → {save_path}")
 
-            buffer = []
-            shard_id += 1
+                buffer = []
+                shard_id += 1
 
-        # Print heartbeat
-        if shard_id % 10 == 0:
-            print(f"Still running… shards={shard_id-1}")
+            # (optional) small heartbeat print
+            if shard_id % 10 == 0:
+                print(f"Still running… shards={shard_id-1}")
+
+    finally:
+        sf.close()
 
 
 if __name__ == "__main__":
