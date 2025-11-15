@@ -1,75 +1,156 @@
 #include "move.hpp"
-#include <sstream>
+#include <stdexcept>
 
 namespace chess {
 
-Move::Move(int from, int to, int promotion, int flags) {
-    data_ = (from & 0x3F) | ((to & 0x3F) << 6) | ((promotion & 0x3) << 12) | ((flags & 0x3) << 14);
+static const uint16_t MOVE_MASK_FROM   = 0x003F; // bits 0-5
+static const uint16_t MOVE_MASK_TO     = 0x0FC0; // bits 6-11
+static const uint16_t MOVE_MASK_PROMO  = 0x3000; // bits 12-13
+static const uint16_t MOVE_MASK_FLAGS  = 0xC000; // bits 14-15
+
+static const int MOVE_SHIFT_TO    = 6;
+static const int MOVE_SHIFT_PROMO = 12;
+static const int MOVE_SHIFT_FLAGS = 14;
+
+Move::Move() : data_(0) {}
+
+Move::Move(uint16_t intData) : data_(intData) {}
+
+Move::Move(int intFrom, int intTo) {
+    uint16_t intF = static_cast<uint16_t>(intFrom & 0x3F);
+    uint16_t intT = static_cast<uint16_t>(intTo & 0x3F);
+    data_ = intF | (intT << MOVE_SHIFT_TO);
 }
+
+Move Move::make_promotion(int intFrom, int intTo, int intPromoCode) {
+    uint16_t intF = static_cast<uint16_t>(intFrom & 0x3F);
+    uint16_t intT = static_cast<uint16_t>(intTo & 0x3F);
+    uint16_t intP = static_cast<uint16_t>(intPromoCode & 0x3); // 0..3
+    uint16_t intFlags = 1; // promotion flag
+    uint16_t intData = intF | (intT << MOVE_SHIFT_TO)
+                     | (intP << MOVE_SHIFT_PROMO)
+                     | (intFlags << MOVE_SHIFT_FLAGS);
+    return Move(intData);
+}
+
+Move Move::make_en_passant(int intFrom, int intTo) {
+    uint16_t intF = static_cast<uint16_t>(intFrom & 0x3F);
+    uint16_t intT = static_cast<uint16_t>(intTo & 0x3F);
+    uint16_t intFlags = 2;
+    uint16_t intData = intF | (intT << MOVE_SHIFT_TO)
+                     | (intFlags << MOVE_SHIFT_FLAGS);
+    return Move(intData);
+}
+
+Move Move::make_castling(int intFrom, int intTo) {
+    uint16_t intF = static_cast<uint16_t>(intFrom & 0x3F);
+    uint16_t intT = static_cast<uint16_t>(intTo & 0x3F);
+    uint16_t intFlags = 3;
+    uint16_t intData = intF | (intT << MOVE_SHIFT_TO)
+                     | (intFlags << MOVE_SHIFT_FLAGS);
+    return Move(intData);
+}
+
+int Move::from() const {
+    return static_cast<int>(data_ & MOVE_MASK_FROM);
+}
+
+int Move::to() const {
+    return static_cast<int>((data_ & MOVE_MASK_TO) >> MOVE_SHIFT_TO);
+}
+
+bool Move::is_null() const {
+    return data_ == 0;
+}
+
+bool Move::is_promotion() const {
+    return ((data_ & MOVE_MASK_FLAGS) >> MOVE_SHIFT_FLAGS) == 1;
+}
+
+bool Move::is_en_passant() const {
+    return ((data_ & MOVE_MASK_FLAGS) >> MOVE_SHIFT_FLAGS) == 2;
+}
+
+bool Move::is_castling() const {
+    return ((data_ & MOVE_MASK_FLAGS) >> MOVE_SHIFT_FLAGS) == 3;
+}
+
+int Move::promotion_code() const {
+    if (!is_promotion()) return -1;
+    return static_cast<int>((data_ & MOVE_MASK_PROMO) >> MOVE_SHIFT_PROMO);
+}
+
+static int intFileOf(int intSq) { return intSq % 8; }
+static int intRankOf(int intSq) { return intSq / 8; }
 
 std::string Move::to_uci() const {
-    if (data_ == 0) return "0000";
-    
-    int from_sq = from();
-    int to_sq = to();
-    
-    // Convert square to algebraic notation (e.g., 0 -> a1, 63 -> h8)
-    char from_file = 'a' + (from_sq % 8);
-    char from_rank = '1' + (from_sq / 8);
-    char to_file = 'a' + (to_sq % 8);
-    char to_rank = '1' + (to_sq / 8);
-    
-    std::string result;
-    result += from_file;
-    result += from_rank;
-    result += to_file;
-    result += to_rank;
-    
-    // Add promotion piece if applicable
+    if (is_null()) return "0000";
+
+    int intFromSq = from();
+    int intToSq   = to();
+
+    int intFromFile = intFileOf(intFromSq);
+    int intFromRank = intRankOf(intFromSq);
+    int intToFile   = intFileOf(intToSq);
+    int intToRank   = intRankOf(intToSq);
+
+    std::string str;
+    str.reserve(5);
+    str.push_back(static_cast<char>('a' + intFromFile));
+    str.push_back(static_cast<char>('1' + intFromRank));
+    str.push_back(static_cast<char>('a' + intToFile));
+    str.push_back(static_cast<char>('1' + intToRank));
+
     if (is_promotion()) {
-        int promo = promotion();
-        switch (promo) {
-            case 0: result += 'n'; break;  // Knight
-            case 1: result += 'b'; break;  // Bishop
-            case 2: result += 'r'; break;  // Rook
-            case 3: result += 'q'; break;  // Queen
+        int intPromo = promotion_code();
+        char chPromo = 'q';
+        switch (intPromo) {
+            case 0: chPromo = 'n'; break;
+            case 1: chPromo = 'b'; break;
+            case 2: chPromo = 'r'; break;
+            case 3: chPromo = 'q'; break;
+            default: chPromo = 'q'; break;
         }
+        str.push_back(chPromo);
     }
-    
-    return result;
+
+    return str;
 }
 
-Move Move::from_uci(const std::string& uci) {
-    if (uci.length() < 4) {
-        return Move();  // Invalid
+Move Move::from_uci(const std::string &strUCI) {
+    if (strUCI.size() < 4) {
+        return Move();
     }
-    
-    // Parse from square
-    int from_file = uci[0] - 'a';
-    int from_rank = uci[1] - '1';
-    int from_sq = from_rank * 8 + from_file;
-    
-    // Parse to square
-    int to_file = uci[2] - 'a';
-    int to_rank = uci[3] - '1';
-    int to_sq = to_rank * 8 + to_file;
-    
-    // Check for promotion
-    int promotion = 0;
-    int flags = 0;
-    
-    if (uci.length() == 5) {
-        // Promotion move
-        flags = 1;
-        switch (uci[4]) {
-            case 'n': promotion = 0; break;
-            case 'b': promotion = 1; break;
-            case 'r': promotion = 2; break;
-            case 'q': promotion = 3; break;
+
+    int intFromFile = strUCI[0] - 'a';
+    int intFromRank = strUCI[1] - '1';
+    int intToFile   = strUCI[2] - 'a';
+    int intToRank   = strUCI[3] - '1';
+
+    if (intFromFile < 0 || intFromFile > 7 ||
+        intFromRank < 0 || intFromRank > 7 ||
+        intToFile   < 0 || intToFile   > 7 ||
+        intToRank   < 0 || intToRank   > 7) {
+        return Move();
+    }
+
+    int intFromSq = intFromRank * 8 + intFromFile;
+    int intToSq   = intToRank   * 8 + intToFile;
+
+    if (strUCI.size() == 5) {
+        char chPromo = strUCI[4];
+        int intPromoCode = 3; // default queen
+        switch (chPromo) {
+            case 'n': case 'N': intPromoCode = 0; break;
+            case 'b': case 'B': intPromoCode = 1; break;
+            case 'r': case 'R': intPromoCode = 2; break;
+            case 'q': case 'Q': intPromoCode = 3; break;
+            default:            intPromoCode = 3; break;
         }
+        return make_promotion(intFromSq, intToSq, intPromoCode);
     }
-    
-    return Move(from_sq, to_sq, promotion, flags);
+
+    return Move(intFromSq, intToSq);
 }
 
 } // namespace chess
