@@ -58,7 +58,6 @@ Makefile
 *.pth
 *.onnx
 training/data/raw_pgn/*.pgn
-training/data/processed/*.npz
 training/data/processed/*.hdf5
 
 # Self-play
