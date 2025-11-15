@@ -1,16 +1,18 @@
 import torch
 from chess import Move
-from .utils import chess_manager, GameContext  # adjust if needed
+from src.utils import chess_manager, GameContext  # adjust if needed
 import time
 
 # -------------------------------
 import sys
+import os
 
-# Add the models folder directly to sys.path
-sys.path.append(r"F:/VS Code Storage/ChessHacks2025/training/models")
+# Add the 'training' folder to sys.path
+sys.path.append(r"F:/VS Code Storage/ChessHacks2025/training")
 
-# Now you can import your module
-from resnet_policy_value import ResNetPolicyValue
+# Now import from models
+from models.resnet_policy_value import ResNetPolicyValue
+
 # Model imports
 # -------------------------------
 
@@ -18,7 +20,8 @@ from resnet_policy_value import ResNetPolicyValue
 # -------------------------------
 # Model config
 # -------------------------------
-MODEL_PATH = "F:/VS Code Storage/ChessHacks2025/checkpoints/best_model.pt"
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "weights", "best_model.pt")
+
 #MODEL_PATH =    "F:/VS Code Storage/ChessHacks2025/weights/trained_weights.pt"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -32,7 +35,7 @@ model = ResNetPolicyValue(
 ).to(DEVICE)
 
 # Load weights
-checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=True)
 model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()
 
