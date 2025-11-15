@@ -1,32 +1,33 @@
 #include "repetition.hpp"
-#include <algorithm>
 
 namespace chess {
 
-RepetitionTracker::RepetitionTracker() {
-    history_.reserve(256);
-}
+RepetitionTracker::RepetitionTracker() : vecHistory_() {}
 
-void RepetitionTracker::push(uint64_t hash) {
-    history_.push_back(hash);
+void RepetitionTracker::push(uint64_t intHash) {
+    vecHistory_.push_back(intHash);
 }
 
 void RepetitionTracker::pop() {
-    if (!history_.empty()) {
-        history_.pop_back();
+    if (!vecHistory_.empty()) {
+        vecHistory_.pop_back();
     }
 }
 
 void RepetitionTracker::clear() {
-    history_.clear();
+    vecHistory_.clear();
 }
 
-bool RepetitionTracker::is_repetition(uint64_t hash, int threshold) const {
-    return count_occurrences(hash) >= threshold;
+int RepetitionTracker::count_occurrences(uint64_t intHash) const {
+    int intCount = 0;
+    for (uint64_t h : vecHistory_) {
+        if (h == intHash) ++intCount;
+    }
+    return intCount;
 }
 
-int RepetitionTracker::count_occurrences(uint64_t hash) const {
-    return std::count(history_.begin(), history_.end(), hash);
+bool RepetitionTracker::is_repetition(uint64_t intHash, int intThreshold) const {
+    return count_occurrences(intHash) >= intThreshold;
 }
 
 } // namespace chess
