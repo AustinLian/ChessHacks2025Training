@@ -15,9 +15,9 @@ import torch.nn.functional as F
 # ============================================================
 # CONFIG — EDIT THESE THREE LINES
 # ============================================================
-MODEL_PATH = r"C:\Users\ethan\Downloads\ChessHacks\ChessHacks2025\training\whiteNoise\checkpoints_delta_resnet20\best.pt"
+MODEL_PATH = r"C:/Users/ethan\Downloads/ChessHacks/ChessHacks2025/training\whiteNoise/checkpoints_delta_resnet20\best.pt"
     # path to your model .pt
-NPZ_PATH   = r"C:\Users\ethan\Downloads\ChessHacks\ChessHacks2025\training\whiteNoise\processed\sf_supervised_dataset.npz"  # path to your NPZ file
+NPZ_PATH   = r"C:/Users/ethan\Downloads/ChessHacks/ChessHacks2025/training\whiteNoise/processed\sf_supervised_dataset.npz"  # path to your NPZ file
 DEVICE     = "cuda"                               # "cuda" or "cpu"
 
 BATCH_SIZE = 256
