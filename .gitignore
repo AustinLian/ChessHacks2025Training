@@ -65,8 +65,8 @@ selfplay/buffers/rl_buffer/*.npz
 selfplay/logs/*.log
 
 # Weights (except tracked ones)
-weights/checkpoints/*.pt
-weights/distilled/*.pt
+# weights/checkpoints/*.pt
+# weights/distilled/*.pt
 
 # Temporary files
 *.log

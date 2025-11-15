@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-TRAINER — Delta-CP + ResNet20 + Board Flipping Augmentation + Folder Dataset
-=============================================================================
+TRAINER — Delta-CP + Absolute CP + Result + ResNet20 + Board Flipping Augmentation + Folder Dataset
+===================================================================================================
 
 This trainer:
-  ✔ Predicts delta_cp (much easier target than cp_before)
-  ✔ Reconstructs cp_before = cp_after_best - delta_cp at inference
+  ✔ Predicts delta_cp (local improvement)
+  ✔ Predicts cp_before (absolute evaluation)
+  ✔ Predicts game_result (POV of side to move, in [-1, 0, 1])
   ✔ Uses stronger ResNet-20 (256 channels)
   ✔ Adds board-flip augmentation (horizontal + color flip)
   ✔ Folder of NPZ files supported
   ✔ TQDM progress
-  ✔ Pretty validation samples
 """
 
 from pathlib import Path
@@ -28,7 +28,7 @@ import random
 # ============================================================================
 
 class Config:
-    DATASET_FOLDER = r"training/data/processed/"
+    DATASET_FOLDER = r"training\whiteNoise\processed"
     OUTPUT_DIR = "checkpoints_delta_resnet20"
 
     EPOCHS = 20
@@ -42,6 +42,11 @@ class Config:
 
     VAL_SPLIT = 0.1
     FLIP_PROB = 0.5      # flip 50% of training samples
+
+    # Loss weights
+    W_DELTA = 1.0
+    W_CP = 1.0
+    W_RESULT = 0.5
 
 
 cfg = Config()
@@ -77,7 +82,7 @@ def flip_move_index(idx):
 
 
 # ============================================================================
-# RESNET-20
+# RESNET-20 WITH POLICY + DELTA + CP + RESULT HEADS
 # ============================================================================
 
 class BasicBlock(nn.Module):
@@ -100,7 +105,7 @@ class BasicBlock(nn.Module):
     def forward(self, x):
         h = self.relu(self.bn1(self.conv1(x)))
         h = self.bn2(self.conv2(h))
-        h += self.short(x)
+        h = h + self.short(x)
         return self.relu(h)
 
 
@@ -111,8 +116,7 @@ class ResNet20_PolicyDelta(nn.Module):
         self.cp_scale = cp_scale
 
         def make_layer(in_c, out_c, blocks):
-            layers = []
-            layers.append(BasicBlock(in_c, out_c))
+            layers = [BasicBlock(in_c, out_c)]
             for _ in range(blocks - 1):
                 layers.append(BasicBlock(out_c, out_c))
             return nn.Sequential(*layers)
@@ -124,8 +128,12 @@ class ResNet20_PolicyDelta(nn.Module):
         self.avg = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(256, 256)
 
+        # Heads
         self.policy_head = nn.Linear(256, policy_dim)
-        self.delta_head = nn.Linear(256, 1)
+        self.delta_head = nn.Linear(256, 1)   # delta_cp (scaled)
+        self.cp_head = nn.Linear(256, 1)      # cp_before (scaled)
+        self.result_head = nn.Linear(256, 1)  # game result in [-1,1] via tanh
+
         self.relu = nn.ReLU()
 
     def forward(self, x):
@@ -139,10 +147,19 @@ class ResNet20_PolicyDelta(nn.Module):
         x = self.relu(self.fc(x))
 
         policy_logits = self.policy_head(x)
-        delta_scaled = self.delta_head(x).squeeze(-1)
 
+        delta_scaled = self.delta_head(x).squeeze(-1)   # scaled delta_cp
+        cp_scaled = self.cp_head(x).squeeze(-1)         # scaled cp_before
+
+        # Convert to real cp units
         delta_real = delta_scaled * self.cp_scale
-        return policy_logits, delta_real, delta_scaled
+        cp_real = cp_scaled * self.cp_scale
+
+        # Game result in [-1,1]
+        result_raw = self.result_head(x).squeeze(-1)
+        result = torch.tanh(result_raw)
+
+        return policy_logits, delta_real, delta_scaled, cp_real, cp_scaled, result
 
 
 # ============================================================================
@@ -150,30 +167,61 @@ class ResNet20_PolicyDelta(nn.Module):
 # ============================================================================
 
 class FolderNPZDataset(Dataset):
+    """
+    Loads all NPZ files in a folder.
+
+    Expected keys per NPZ (from your self-play generator):
+      - X              : (N, 18, 8, 8)
+      - y_policy_best  : (N,)
+      - cp_before      : (N,)
+      - cp_after_best  : (N,)
+      - delta_cp       : (N,)   (optional; recomputed if missing)
+      - game_result    : (N,)   in {-1,0,1}
+    """
+
     def __init__(self, folder, cp_clip, cp_scale, flip_prob):
         files = sorted(Path(folder).glob("*.npz"))
         if not files:
-            raise FileNotFoundError("No NPZs found.")
+            raise FileNotFoundError(f"No NPZs found in {folder}")
 
         Xs = []
         policies = []
         deltas = []
+        cps = []
+        results = []
 
         for f in files:
             d = np.load(f)
             Xs.append(d["X"])
             policies.append(d["y_policy_best"])
+
             cp_before = d["cp_before"].astype(np.float32)
             cp_after = d["cp_after_best"].astype(np.float32)
-            delta_cp = cp_after - cp_before
+
+            if "delta_cp" in d:
+                delta_cp = d["delta_cp"].astype(np.float32)
+            else:
+                delta_cp = cp_after - cp_before
+
             delta_cp = np.clip(delta_cp, -cp_clip, cp_clip)
+
+            game_result = d["game_result"].astype(np.float32)  # -1,0,1 POV of side to move
+
+            cps.append(cp_before)
             deltas.append(delta_cp)
+            results.append(game_result)
 
         self.X = np.concatenate(Xs).astype(np.float32)
         self.policy = np.concatenate(policies).astype(np.int64)
-        delta = np.concatenate(deltas).astype(np.float32)
 
+        cp = np.concatenate(cps).astype(np.float32)
+        delta = np.concatenate(deltas).astype(np.float32)
+        result = np.concatenate(results).astype(np.float32)
+
+        self.cp_scaled = cp / cp_scale
         self.delta_scaled = delta / cp_scale
+        self.result = result
+
         self.flip_prob = flip_prob
 
     def __len__(self):
@@ -183,13 +231,24 @@ class FolderNPZDataset(Dataset):
         p = torch.from_numpy(self.X[idx])
         pol = int(self.policy[idx])
         delta = float(self.delta_scaled[idx])
+        cp = float(self.cp_scaled[idx])
+        res = float(self.result[idx])
 
+        # Board flip augmentation
         if random.random() < self.flip_prob:
-            p = torch.flip(p, dims=[2])   # flip horizontally
+            p = torch.flip(p, dims=[2])   # flip horizontally (file-wise)
             pol = flip_move_index(pol)
-            delta = -delta               # eval sign flips
+            delta = -delta                # perspective flips
+            cp = cp                       # cp_before does NOT change sign under horizontal mirror
+            res = res                     # result unchanged under mirror
 
-        return p, torch.tensor(pol), torch.tensor(delta)
+        return (
+            p,
+            torch.tensor(pol, dtype=torch.long),
+            torch.tensor(delta, dtype=torch.float32),
+            torch.tensor(cp, dtype=torch.float32),
+            torch.tensor(res, dtype=torch.float32),
+        )
 
 
 # ============================================================================
@@ -201,22 +260,39 @@ def run_epoch(model, loader, optimizer, device, epoch, train=True):
     ce = nn.CrossEntropyLoss()
     l1 = nn.SmoothL1Loss(beta=2.0)
 
-    total_loss = total_pol = total_val = 0
+    total_loss = total_pol = total_delta = total_cp = total_res = 0.0
     total = 0
 
     tag = "Train" if train else "Val"
     with tqdm(loader, desc=f"{tag} {epoch}", ncols=100) as t:
-        for planes, pol, delta in t:
+        for planes, pol, delta_t, cp_t, res_t in t:
             planes = planes.to(device)
             pol = pol.to(device)
-            delta = delta.to(device)
+            delta_t = delta_t.to(device)
+            cp_t = cp_t.to(device)
+            res_t = res_t.to(device)
 
             with torch.set_grad_enabled(train):
-                logits, _, delta_pred = model(planes)
+                (
+                    logits,
+                    _delta_real,
+                    delta_pred_scaled,
+                    _cp_real,
+                    cp_pred_scaled,
+                    res_pred,
+                ) = model(planes)
 
                 loss_pol = ce(logits, pol)
-                loss_val = l1(delta_pred, delta)
-                loss = loss_pol + loss_val * 2.0
+                loss_delta = l1(delta_pred_scaled, delta_t)
+                loss_cp = l1(cp_pred_scaled, cp_t)
+                loss_res = l1(res_pred, res_t)
+
+                loss = (
+                    loss_pol
+                    + cfg.W_DELTA * loss_delta
+                    + cfg.W_CP * loss_cp
+                    + cfg.W_RESULT * loss_res
+                )
 
                 if train:
                     optimizer.zero_grad()
@@ -226,16 +302,20 @@ def run_epoch(model, loader, optimizer, device, epoch, train=True):
             bs = planes.size(0)
             total += bs
             total_pol += loss_pol.item() * bs
-            total_val += loss_val.item() * bs
+            total_delta += loss_delta.item() * bs
+            total_cp += loss_cp.item() * bs
+            total_res += loss_res.item() * bs
             total_loss += loss.item() * bs
 
             t.set_postfix({
-                "pol": f"{total_pol/total:.3f}",
-                "val": f"{total_val/total:.3f}",
-                "tot": f"{total_loss/total:.3f}"
+                "pol": f"{total_pol / total:.3f}",
+                "dlt": f"{total_delta / total:.3f}",
+                "cp": f"{total_cp / total:.3f}",
+                "res": f"{total_res / total:.3f}",
+                "tot": f"{total_loss / total:.3f}",
             })
 
-    return total_loss/total
+    return total_loss / total
 
 
 # ============================================================================
@@ -250,17 +330,28 @@ def main():
     val_size = int(N * cfg.VAL_SPLIT)
     train_set, val_set = random_split(ds, [N - val_size, val_size])
 
-    train_loader = DataLoader(train_set, batch_size=cfg.BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=cfg.BATCH_SIZE)
+    train_loader = DataLoader(
+        train_set,
+        batch_size=cfg.BATCH_SIZE,
+        shuffle=True,
+        num_workers=cfg.NUM_WORKERS,
+    )
+    val_loader = DataLoader(
+        val_set,
+        batch_size=cfg.BATCH_SIZE,
+        shuffle=False,
+        num_workers=cfg.NUM_WORKERS,
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
     model = ResNet20_PolicyDelta(ds.X.shape[1], cfg.POLICY_DIM, cfg.CP_SCALE).to(device)
     opt = optim.Adam(model.parameters(), lr=cfg.LR)
 
     out = Path(cfg.OUTPUT_DIR)
     out.mkdir(parents=True, exist_ok=True)
 
-    best = 999999
+    best = float("inf")
 
     for epoch in range(1, cfg.EPOCHS + 1):
         train_loss = run_epoch(model, train_loader, opt, device, epoch, train=True)
