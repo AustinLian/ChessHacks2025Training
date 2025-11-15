@@ -6,30 +6,43 @@
 
 namespace chess {
 
-// Move generation
 class MoveGen {
 public:
-    static std::vector<Move> generate_legal_moves(const Board& board);
-    static std::vector<Move> generate_captures(const Board& board);
-    static bool is_legal(const Board& board, const Move& move);
-    static bool is_in_check(const Board& board, Color side);
-    static bool is_checkmate(const Board& board);
-    static bool is_stalemate(const Board& board);
-    static bool is_insufficient_material(const Board& board);
-    
-    // Perft for testing
-    static uint64_t perft(Board& board, int depth);
-    
+    static std::vector<Move> generate_legal_moves(const Board &stBoard);
+    static std::vector<Move> generate_captures(const Board &stBoard);
+    static bool is_legal(const Board &stBoard, const Move &stMove);
+    static bool is_in_check(const Board &stBoard, Color enmSide);
+
 private:
-    static void generate_pawn_moves(const Board& board, std::vector<Move>& moves);
-    static void generate_knight_moves(const Board& board, std::vector<Move>& moves);
-    static void generate_bishop_moves(const Board& board, std::vector<Move>& moves);
-    static void generate_rook_moves(const Board& board, std::vector<Move>& moves);
-    static void generate_queen_moves(const Board& board, std::vector<Move>& moves);
-    static void generate_king_moves(const Board& board, std::vector<Move>& moves);
-    static void generate_castling_moves(const Board& board, std::vector<Move>& moves);
-    
-    static bool is_attacked(const Board& board, int square, Color by_color);
+    static void generate_pawn_moves(const Board &stBoard,
+                                    std::vector<Move> &vecQuiet,
+                                    std::vector<Move> &vecCaps);
+    static void generate_knight_moves(const Board &stBoard,
+                                      std::vector<Move> &vecQuiet,
+                                      std::vector<Move> &vecCaps);
+    static void generate_bishop_moves(const Board &stBoard,
+                                      std::vector<Move> &vecQuiet,
+                                      std::vector<Move> &vecCaps);
+    static void generate_rook_moves(const Board &stBoard,
+                                    std::vector<Move> &vecQuiet,
+                                    std::vector<Move> &vecCaps);
+    static void generate_queen_moves(const Board &stBoard,
+                                     std::vector<Move> &vecQuiet,
+                                     std::vector<Move> &vecCaps);
+    static void generate_king_moves(const Board &stBoard,
+                                    std::vector<Move> &vecQuiet,
+                                    std::vector<Move> &vecCaps);
+    static void generate_castling_moves(const Board &stBoard,
+                                        std::vector<Move> &vecQuiet);
+
+    static bool is_attacked(const Board &stBoard, int intSq, Color enmBy);
+
+    // helper
+    static int file_of(int intSq) { return intSq % 8; }
+    static int rank_of(int intSq) { return intSq / 8; }
 };
+
+// Apply a move to a board (no undo; use copy in search)
+void apply_move(Board &stBoard, const Move &stMove);
 
 } // namespace chess
