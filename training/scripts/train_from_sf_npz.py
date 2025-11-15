@@ -64,13 +64,17 @@ class ChessNet(nn.Module):
 
 # ---------- Training script ----------
 
+# ---------- Training script ----------
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--dataset",
+        "--data-dir",
         type=str,
-        default="training/data/processed/sf_supervised_dataset1519.npz",
+        default="training/data/processed",
+        help="Directory containing one or more .npz supervised SF datasets",
     )
+
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -85,6 +89,7 @@ def parse_args():
         default="cuda" if torch.cuda.is_available() else "cpu",
     )
     return parser.parse_args()
+
 
 
 def main():

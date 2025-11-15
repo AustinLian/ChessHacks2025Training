@@ -8,4 +8,5 @@ __all__ = [
     'StreamingPGNDataset',
     'SelfPlayDataset',
     'RollingBuffer',
+    "sf_supervised_dataset"
 ]
