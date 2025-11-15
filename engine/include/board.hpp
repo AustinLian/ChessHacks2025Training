@@ -1,73 +1,51 @@
 #pragma once
-
 #include <cstdint>
-#include <array>
 #include <string>
 
 namespace chess {
 
-// Piece types
-enum PieceType : uint8_t {
-    PAWN = 0,
-    KNIGHT = 1,
-    BISHOP = 2,
-    ROOK = 3,
-    QUEEN = 4,
-    KING = 5,
-    NO_PIECE = 6
+enum Color {
+    COLOR_WHITE = 0,
+    COLOR_BLACK = 1
 };
 
-// Colors
-enum Color : uint8_t {
-    WHITE = 0,
-    BLACK = 1,
-    NO_COLOR = 2
+enum PieceType {
+    PIECE_PAWN,
+    PIECE_KNIGHT,
+    PIECE_BISHOP,
+    PIECE_ROOK,
+    PIECE_QUEEN,
+    PIECE_KING,
+    PIECE_NONE
 };
 
-// Castling rights
 enum CastlingRights : uint8_t {
-    NO_CASTLING = 0,
-    WHITE_OO = 1,
-    WHITE_OOO = 2,
-    BLACK_OO = 4,
-    BLACK_OOO = 8,
-    ALL_CASTLING = 15
+    CASTLE_NONE        = 0,
+    CASTLE_WHITE_KING  = 1 << 0,
+    CASTLE_WHITE_QUEEN = 1 << 1,
+    CASTLE_BLACK_KING  = 1 << 2,
+    CASTLE_BLACK_QUEEN = 1 << 3
 };
 
-// Board representation
-class Board {
-public:
+struct Board {
+    PieceType arrPieceType[64];
+    Color     arrPieceColor[64];
+
+    Color   clrSideToMove;
+    uint8_t bytCastlingRights;
+    int8_t  intEnPassantSquare;   // -1 if none
+    int     intHalfmoveClock;
+    int     intFullmoveNumber;
+
     Board();
-    explicit Board(const std::string& fen);
-    
-    // Board state
-    void reset();
-    bool set_fen(const std::string& fen);
-    std::string to_fen() const;
-    
-    // Accessors
-    PieceType piece_at(int square) const;
-    Color color_at(int square) const;
-    Color side_to_move() const;
-    uint8_t castling_rights() const;
-    int en_passant_square() const;
-    int halfmove_clock() const;
-    int fullmove_number() const;
-    
-    // Hash for transposition table
-    uint64_t hash() const;
-    
-private:
-    std::array<PieceType, 64> pieces_;
-    std::array<Color, 64> colors_;
-    Color side_to_move_;
-    uint8_t castling_rights_;
-    int en_passant_square_;
-    int halfmove_clock_;
-    int fullmove_number_;
-    uint64_t hash_;
-    
-    void update_hash();
+
+    void setFromFEN(const std::string &strFEN);
+    std::string toFEN() const;
+    std::string toString() const;
 };
+
+inline Color opposite_color(Color clr) {
+    return (clr == COLOR_WHITE) ? COLOR_BLACK : COLOR_WHITE;
+}
 
 } // namespace chess

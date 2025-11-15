@@ -2,46 +2,42 @@
 
 #include "board.hpp"
 #include "move.hpp"
+#include "time_manager.hpp"
+#include "repetition.hpp"
+#include "nn_infer.hpp"
+
 #include <vector>
 #include <memory>
+#include <cstdint>
 
 namespace chess {
 
-class NNInference;
-
-// Search result
 struct SearchResult {
-    Move best_move;
-    float score;
-    int depth;
-    uint64_t nodes;
-    std::vector<Move> principal_variation;
+    Move  stBestMove;
+    float fltScore;
 };
 
-// Search engine
 class Search {
 public:
-    explicit Search(std::shared_ptr<NNInference> nn);
-    
-    SearchResult search(Board& board, int max_depth, int64_t time_limit_ms);
+    Search();
+
+    void set_time_manager(std::shared_ptr<TimeManager> ptrTM) { ptrTimeManager_ = ptrTM; }
+    void set_repetition_tracker(std::shared_ptr<RepetitionTracker> ptrRep) { ptrRepTracker_ = ptrRep; }
+
+    SearchResult search(Board &stBoard, int intMaxDepth, int64_t intTimeMs);
+
     void stop();
-    
-    // Configuration
-    void set_transposition_table_size(size_t mb);
-    void enable_history_heuristic(bool enable);
-    void enable_killer_moves(bool enable);
-    
+    uint64_t nodes_searched() const { return intNodesSearched_; }
+
 private:
-    float alpha_beta(Board& board, int depth, float alpha, float beta, bool is_max);
-    std::vector<Move> order_moves(const Board& board, const std::vector<Move>& moves);
-    
-    std::shared_ptr<NNInference> nn_;
-    bool should_stop_;
-    uint64_t nodes_searched_;
-    
-    // Heuristics
-    bool use_history_;
-    bool use_killers_;
+    float alpha_beta(Board &stBoard, int intDepth, float fltAlpha, float fltBeta);
+    std::vector<Move> order_moves(const Board &stBoard, const std::vector<Move> &vecMoves);
+
+    std::shared_ptr<TimeManager>      ptrTimeManager_;
+    std::shared_ptr<RepetitionTracker> ptrRepTracker_;
+
+    bool      blnShouldStop_;
+    uint64_t  intNodesSearched_;
 };
 
 } // namespace chess
