@@ -4,8 +4,8 @@ from pathlib import Path
 # Path to your saved model
 MODEL_PATH = Path(r"F:/VS Code Storage/ChessHacks2025/checkpoints/best_model.pt")
 
-    
-SAVE_WEIGHTS_PATH = Path(r"F:/VS Code Storage/ChessHacks2025/weights/trained_weights.txt")
+
+SAVE_WEIGHTS_PATH = Path(r"F:/VS Code Storage/ChessHacks2025/weights/trained_weights.pt")
 
 
 # Load checkpoint

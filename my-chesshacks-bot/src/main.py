@@ -1,100 +1,129 @@
-
-import sys
-from utils import chess_manager, GameContext
-from chess import Move
 import torch
-import numpy as np
-from pathlib import Path
+from chess import Move
+from .utils import chess_manager, GameContext  # adjust if needed
+import time
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()  # go up 2 levels from src
-sys.path.append(str(PROJECT_ROOT))
+# -------------------------------
+import sys
 
-from training.models.resnet_policy_value import create_model
-import random
+# Add the models folder directly to sys.path
+sys.path.append(r"F:/VS Code Storage/ChessHacks2025/training/models")
 
-# -----------------------------
-# CONFIG
-# -----------------------------
-MODEL_PATH = Path("F:\VS Code Storage\ChessHacks2025\checkpoints/best_model.pt")
-NUM_PLANES = 18
-POLICY_DIM = 64*64*5  # 20480 moves
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Now you can import your module
+from resnet_policy_value import ResNetPolicyValue
+# Model imports
+# -------------------------------
 
-# -----------------------------
-# LOAD MODEL ONCE
-# -----------------------------
-model = create_model({'num_planes': NUM_PLANES, 'policy_dim': POLICY_DIM})
-checkpoint = torch.load(MODEL_PATH, map_location=device)
-if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-    model.load_state_dict(checkpoint['model_state_dict'])
-else:
-    model.load_state_dict(checkpoint)
-model.to(device)
+
+# -------------------------------
+# Model config
+# -------------------------------
+MODEL_PATH = "F:/VS Code Storage/ChessHacks2025/checkpoints/best_model.pt"
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model = ResNetPolicyValue(
+    num_blocks=10,
+    channels=128,
+    input_planes=18,
+    policy_channels=32,
+    value_channels=32,
+    policy_size=20480
+).to(DEVICE)
+
+# Load weights
+checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()
 
 
-# -----------------------------
-# BOARD -> 18-PLANE CONVERSION
-# -----------------------------
-def board_to_planes(board):
-    planes = np.zeros((NUM_PLANES, 8, 8), dtype=np.float32)
-    piece_map = board.piece_map()
-    for square, piece in piece_map.items():
-        row = 7 - (square // 8)
-        col = square % 8
-        plane_index = None
-        if piece.color:  # white
-            plane_index = {'P':0,'N':1,'B':2,'R':3,'Q':4,'K':5}[piece.symbol().upper()]
-        else:  # black
-            plane_index = {'P':6,'N':7,'B':8,'R':9,'Q':10,'K':11}[piece.symbol().upper()]
-        planes[plane_index, row, col] = 1.0
-    # remaining planes 12-17 left as zeros (or fill as in training)
-    planes = planes * 2.0 - 1.0  # normalize if training did
-    return torch.tensor(planes, dtype=torch.float32).unsqueeze(0).to(device)
+# -------------------------------
+# Board -> Tensor (18 planes)
+# -------------------------------
+piece_to_plane = {
+    'P': 0, 'N': 1, 'B': 2, 'R': 3, 'Q': 4, 'K': 5,
+    'p': 6, 'n': 7, 'b': 8, 'r': 9, 'q': 10, 'k': 11,
+}
+
+def board_to_tensor(board):
+    planes = torch.zeros((1, 18, 8, 8), dtype=torch.float32, device=DEVICE)
+
+    for square in range(64):
+        piece = board.piece_at(square)
+        if piece:
+            plane = piece_to_plane[piece.symbol()]
+            rank = 7 - (square // 8)
+            file = square % 8
+            planes[0, plane, rank, file] = 1.0
+
+    planes[0, 12, :, :] = 1.0 if board.has_kingside_castling_rights(True) else 0
+    planes[0, 13, :, :] = 1.0 if board.has_queenside_castling_rights(True) else 0
+    planes[0, 14, :, :] = 1.0 if board.has_kingside_castling_rights(False) else 0
+    planes[0, 15, :, :] = 1.0 if board.has_queenside_castling_rights(False) else 0
+
+    planes[0, 16, :, :] = 1.0 if board.turn else 0
+    planes[0, 17, :, :] = 0.0  # extra plane
+
+    return planes
 
 
-# -----------------------------
-# MOVE -> POLICY INDEX
-# -----------------------------
-def move_uci_to_index(move: Move):
-    """
-    TODO: implement your 20480 move encoding exactly as in training dataset
-    """
-    return 0  # placeholder for now
+# -------------------------------
+# Move to index mapping
+# -------------------------------
+# Placeholder: must match training encoding exactly
+def move_to_index(move):
+    # Simple 64*64 example mapping
+    return move.from_square * 64 + move.to_square
 
 
-# -----------------------------
-# CHESSHACKS ENTRYPOINT
-# -----------------------------
+# -------------------------------
+# ChessHacks Entrypoint
+# -------------------------------
 @chess_manager.entrypoint
 def test_func(ctx: GameContext):
     legal_moves = list(ctx.board.generate_legal_moves())
     if not legal_moves:
         ctx.logProbabilities({})
-        raise ValueError("No legal moves available")
+        raise ValueError("No legal moves available!")
 
-    # Convert board
-    input_planes = board_to_planes(ctx.board)
+    # Convert board to tensor
+    board_tensor = board_to_tensor(ctx.board)
 
-    # Forward pass
+    # Get policy & value
     with torch.no_grad():
-        policy_logits, _ = model(input_planes)
-        policy_probs = torch.softmax(policy_logits, dim=-1).cpu().numpy().flatten()
+        policy_logits, value = model.predict(board_tensor)
+        policy_logits = policy_logits.cpu().numpy().flatten()
 
-    # Filter to legal moves
-    move_to_idx = {m: move_uci_to_index(m) for m in legal_moves}
-    move_weights = [policy_probs[move_to_idx[m]] for m in legal_moves]
-    total_weight = sum(move_weights)
-    move_weights = [w / total_weight for w in move_weights]
+    # Map legal moves to probabilities
+    move_probs = {}
+    for move in legal_moves:
+        idx = move_to_index(move)
+        if idx < len(policy_logits):
+            move_probs[move] = float(policy_logits[idx])
+        else:
+            move_probs[move] = 0.0
 
-    # Log probabilities for ChessHacks
-    ctx.logProbabilities({m: w for m, w in zip(legal_moves, move_weights)})
+    # Normalize probabilities
+    total = sum(move_probs.values())
+    if total > 0:
+        for move in move_probs:
+            move_probs[move] /= total
+    else:
+        # fallback: uniform if something went wrong
+        uniform_prob = 1.0 / len(legal_moves)
+        for move in legal_moves:
+            move_probs[move] = uniform_prob
 
-    # Return sampled move
-    return random.choices(legal_moves, weights=move_weights, k=1)[0]
+    ctx.logProbabilities(move_probs)
+
+    # Choose move according to probabilities
+    import random
+    weights = [move_probs[m] for m in legal_moves]
+    chosen_move = random.choices(legal_moves, weights=weights, k=1)[0]
+
+    return chosen_move
 
 
 @chess_manager.reset
 def reset_func(ctx: GameContext):
-    # Clear any cached state if needed
+    # Reset model caches if needed
     pass

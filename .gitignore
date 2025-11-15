@@ -75,3 +75,5 @@ weights/distilled/*.pt
 LumbrasGigaBase_OTB_2020-2024.pgn
 my-chesshacks-bot/.env.template
 .env.template
+.env.local
+my-chesshacks-bot/.env.template
