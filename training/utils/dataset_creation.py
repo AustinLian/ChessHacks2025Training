@@ -8,18 +8,19 @@ import random
 
 # ---------- CONFIG: EDIT THESE ----------
 # Your big PGN file:
-PGN_PATH = Path(r"training\utils\LumbrasGigaBase_OTB_2015-2019.pgn")
+PGN_PATH = Path(r"F:/VS Code Storage/ChessHacks2025/training\scripts/chunk_2.pgn")
+
 
 # Where to save the dataset:
-OUT_PATH = Path(r"training/data/processed/sf_supervised_dataset1519.npz")
+OUT_PATH = Path(r"training/data/processed/sf_supervised_dataset1000games1.npz")
 
 # Path to Stockfish binary:
-ENGINE_PATH = r"stockfish/stockfish-windows-x86-64-avx2.exe"  # fix slashes or use raw string
+ENGINE_PATH = r"F:/VS Code Storage/ChessHacks2025\stockfish\stockfish-windows-x86-64-avx2.exe"
 
 SAMPLE_EVERY = 1      # 1 = every ply, 2 = every second ply, etc.
-MAX_GAMES = 400         # or None for all games
+MAX_GAMES = 1000         # or None for all games
 TIME_LIMIT = 0.05     # seconds per position if DEPTH is None
-DEPTH = 14            # e.g. 16 for fixed depth instead of time
+DEPTH = 16           # e.g. 16 for fixed depth instead of time
 
 # Debug controls:
 DEBUG = False         # set True for verbose per-game/per-ply debug
