@@ -15,7 +15,7 @@ from tqdm import tqdm
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
-from utils.fen_encoding import fen_to_planes
+from training.scripts.utils.fen_encoding import fen_to_planes
 from utils.move_encoding import move_to_index
 
 
